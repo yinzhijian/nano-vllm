@@ -7,6 +7,8 @@ from multiprocessing.shared_memory import SharedMemory
 from nanovllm.config import Config
 from nanovllm.engine.sequence import Sequence
 from nanovllm.models.qwen3 import Qwen3ForCausalLM
+from nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM
+
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
@@ -26,9 +28,17 @@ class ModelRunner:
         dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
-        torch.set_default_dtype(hf_config.dtype)
+
         torch.set_default_device("cuda")
-        self.model = Qwen3ForCausalLM(hf_config)
+        if hf_config.model_type == "qwen3":
+            torch.set_default_dtype(hf_config.dtype)
+            self.model = Qwen3ForCausalLM(hf_config)
+        elif hf_config.model_type == "qwen3_5":
+            hf_config = hf_config.text_config
+            torch.set_default_dtype(hf_config.dtype)
+            self.model = Qwen3_5ForCausalLM(hf_config)
+        else:
+            raise ValueError(f"Unsupported model type: {hf_config.model_type}")
         load_model(self.model, config.model)
         self.sampler = Sampler()
         self.warmup_model()
@@ -103,6 +113,8 @@ class ModelRunner:
     def allocate_kv_cache(self):
         config = self.config
         hf_config = config.hf_config
+        if hf_config.model_type == "qwen3_5":
+            hf_config = hf_config.text_config
         free, total = torch.cuda.mem_get_info()
         used = total - free
         peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
@@ -223,6 +235,8 @@ class ModelRunner:
     def capture_cudagraph(self):
         config = self.config
         hf_config = config.hf_config
+        if hf_config.model_type == "qwen3_5":
+            hf_config = hf_config.text_config
         max_bs = min(self.config.max_num_seqs, 512)
         max_num_blocks = (config.max_model_len + self.block_size - 1) // self.block_size
         input_ids = torch.zeros(max_bs, dtype=torch.int64)
